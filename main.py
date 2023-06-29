@@ -1,5 +1,6 @@
 import socketio
 import os
+import subprocess
 
 # standard Python
 sio = socketio.Client()
@@ -8,7 +9,7 @@ sio = socketio.Client()
 class TargetNamespace(socketio.ClientNamespace) :
     
     # do not update this programatically
-    __cwd = r'C:\Users\Sid\Desktop'
+    __cwd = r'/home/ubuntu/Desktop'
     
     # keep the state of all terminals in client's browser
     
@@ -65,14 +66,15 @@ class TargetNamespace(socketio.ClientNamespace) :
         
     
     #add terminal to storage of terminals
-    def addTerminal(self):
+    def addTerminal(self,terminal_id):
+        for term in self.__terminals:
+            if term["terminal_id"] == terminal_id:return
+        
         self.__terminals.append({
             "cwd":self.__cwd,
             "previous_command":[],
+            "terminal_id":terminal_id
         })
-        length =  len(self.__terminals)
-        terminal_id = id(self.__terminals[length-1])
-        self.__terminals[length-1]["terminal_id"] = terminal_id
     
     def removeTerminal(self,terminal_id):
         i = 0
@@ -86,8 +88,43 @@ class TargetNamespace(socketio.ClientNamespace) :
         if index != -1:
             del self.__terminals[index]
     
+    def execute_command(self,id,command):
+
+        if self.is_cd_command(command):
+            return self.execute_cd(id,command)
+
+        terminal = None
+
+        for term in self.__terminals:
+            if term['terminal_id'] == id:
+                terminal=term
+                break
+
+        if terminal == None : return "Error"
+
+        print(terminal['cwd'])
+        os.chdir(terminal['cwd'])
+        result = subprocess.check_output(command,shell=True,text=True)[:-1]
+        return result
+    
+    def execute_cd(self,id,command):
+        split = command.split(" ")
+        split.pop(0)
+        directory = " ".join(split)
+        os.chdir(directory)
+        cwd = subprocess.check_output("pwd",shell=True,text=True).strip()
+
+        for term in self.__terminals:
+            if term['terminal_id'] == id:
+                term["cwd"] = cwd
+                print(term['cwd'])
+                break
+        return cwd
+
     def is_cd_command(self,command):
-        pass
+        split = command.split(" ")
+        if(split[0]=="cd") : return True
+        return False
     
     #end
     
@@ -158,6 +195,7 @@ class TargetNamespace(socketio.ClientNamespace) :
         
         
         print(f"server requested to add { payload['name'] } items")
+        print(payload)
         
         if not self.isPathValid(payload["path"]):
             self.emit("load_dir_response",{"status":False,"data":None})
@@ -176,9 +214,34 @@ class TargetNamespace(socketio.ClientNamespace) :
         data = self.listItems(payload["path"])
         
         self.emit("load_dir_response",{"path":payload['path'],"status":True,"data":data})
+
+        # if self.__cwd == payload['path']:
+        #     self.emit("load_desktop_response",{"path":payload['path'],"status":True,"data":data})
+
         return
         
+    """
+        schema for request payload of the function below:-
+        {
+            path:"path",
+            isFile:boolean,
+            name:"name"
+        }
+        schema for response payload of the function below:-
+    """
     
+    def on_rename_item_request(self,payload):
+
+        source = os.path.join(payload["path"],payload["oldName"])
+        dest = os.path.join(payload["path"],payload["newName"])
+
+        print(f"server requested to rename { source } to {dest}")
+        os.rename(source,dest)
+
+        data = self.listItems(payload['path'])
+        self.emit("load_dir_response",{"path":payload['path'],"status":True,"data":data})
+
+
     """
         schema for request payload of the function below:-
         {
@@ -190,17 +253,27 @@ class TargetNamespace(socketio.ClientNamespace) :
     """
     def on_remove_item_from_path_request(self,payload):
         
-        print(f"server requested to add { payload['path'] } items")
+        print(f"server requested to delete { payload['path'] } items")
         
         path = payload['path']
         
+        dir_name = os.path.dirname(path)
+
         if not self.isPathValid(path):
             self.emit('load_dir_response',{'status':False,'data':None})
             return
-        os.remove(path)
+            
+        if os.path.isfile(path):
+            os.remove(path)
+        else:
+            os.rmdir(path)
         
-        data = self.listItems(payload["path"])
-        self.emit("load_dir_response",{"status":True,"data":data})
+        data = self.listItems(dir_name)
+        
+        self.emit("load_dir_response",{"path":dir_name,"status":True,"data":data})
+
+        if self.__cwd == payload['path']:
+            self.emit("load_desktop_response",{"path":payload['path'],"status":True,"data":data})
         
     
     #------------------- folder and its files events -END -------------------#
@@ -211,28 +284,24 @@ class TargetNamespace(socketio.ClientNamespace) :
         schema for request payload of the function below:-
         {
             path:"path",
-            name:"name",
         }
         schema for response payload of the function below:-
         {
             path:"path",
-            name:"name",
             data:"data"
         }
     """
     def on_get_data_from_file_request(self,payload):
-        path = os.path.join(payload['path'],payload['name'])
         
-        if not self.isPathValid(path):
+        if not self.isPathValid(payload['path']):
             self.emit('get_data_from_file_response',{'status':False,'data':None})
             return
         
-        file = open(path,"r")
+        file = open(payload['path'],"r")
         fileData = file.read()
         
         data = {
             'path':payload['path'],
-            'name':payload['name'],
             'data':fileData,
         }
         self.emit("get_data_from_file_response",{'status':True,'data':data})
@@ -242,18 +311,16 @@ class TargetNamespace(socketio.ClientNamespace) :
         schema for request payload of the function below:-
         {
             path:"path",
-            name:"name",
             data:"data",
         }
         schema for response payload of the function below:-
         {
             path:"path",
-            name:"name",
             data:"data"
         }
     """
     def on_set_data_to_file_request(self,payload):
-        path = os.path.join(payload['path'],payload['name'])
+        path = payload['path']
         
         if not self.isPathValid(path):
             self.emit('set_data_to_file_response',{'status':False,'data':None})
@@ -267,19 +334,26 @@ class TargetNamespace(socketio.ClientNamespace) :
         fileData = newFile.read()
         
         data = {
-            'path':payload['path'],
-            'name':payload['name'],
+            'path':path,
             'data':fileData
         }
-        self.emit('get_data_from_file_response',{'status':False,'data':data})     
+        self.emit('get_data_from_file_response',{'status':True,'data':data})     
     
     #------------------- files and its data events -END-------------------#     
     
     #------------------- terminal and its events -------------------#   
     
+    #terminal command execution request
+    def on_execute_command_request(self,payload):
+        self.addTerminal(payload["id"])
+        print("server requested to execute command")
+        print(payload['command'])
+        result = self.execute_command(payload['id'],payload['command']).strip()
+        self.emit("execute_command_response",{"id":payload["id"],"result":result})
+
     #terminal opened by user
     def on_terminal_open_request(self,payload):
-        self.addTerminal()
+        self.addTerminal(payload['terminal_id'])
         pass
     
     #terminal closed by user
