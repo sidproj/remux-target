@@ -157,6 +157,7 @@ class TargetNamespace(socketio.ClientNamespace) :
     #------------------- authentication events -------------------#
 
     def on_logout_request(self,payload):
+        print("ending program")
         self.disconnect()
         exit(0)
     
